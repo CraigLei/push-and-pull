@@ -1,0 +1,377 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>推拉箱子 - 解谜示意</title>
+<style>
+  body {
+    background: #1a1a1a;
+    color: #ddd;
+    font-family: sans-serif;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    min-height: 100vh;
+    margin: 0;
+  }
+  h1 { font-size: 20px; font-weight: normal; color: #aaa; margin-bottom: 8px; }
+  #hint { font-size: 13px; color: #777; margin-bottom: 16px; }
+  #hint b { color: #ccc; }
+
+  #game {
+    display: grid;
+    background: #1e1e1e;
+    border-radius: 4px;
+    padding: 8px;
+  }
+
+  .cell {
+    background: #242424;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 24px;
+    box-sizing: border-box;
+    position: relative;
+    /* 默认无边框，墙通过 border-* 类来加 */
+    border-color: #8a6a4a;
+  }
+
+  /* 四条边的墙 */
+  .wall-up    { border-top:    3px solid #8a6a4a; }
+  .wall-right { border-right:  3px solid #8a6a4a; }
+  .wall-down  { border-bottom: 3px solid #8a6a4a; }
+  .wall-left  { border-left:   3px solid #8a6a4a; }
+
+  .cell.target:not(.player)::after {
+    content: "★";
+    color: #fdec50;
+    font-size: var(--target-size, 16px);
+  }
+
+  .cell.target.visited:not(.player)::after {
+    content: "★";
+    color: #4caf50;
+    font-size: var(--target-size, 16px);
+  }
+
+  .cell.box::after {
+    content: "🟫";
+    font-size: var(--icon-size, 22px);
+  }
+
+  .cell.box.on-target {
+    background: #fa2d12;
+  }
+
+  .cell.player::after {
+    content: "🙂";
+    font-size: var(--icon-size, 22px);
+  }
+
+  .cell.player.pull-mode::after {
+    content: "😠";
+    font-size: var(--icon-size, 22px);
+  }
+
+  #status {
+    margin-top: 16px;
+    font-size: 16px;
+    min-height: 24px;
+    color: #8a8;
+  }
+  #status.win { color: #4caf50; font-weight: bold; }
+
+  #mode {
+    margin-top: 8px;
+    font-size: 14px;
+    color: #aaa;
+  }
+  #mode b { color: #e0e0e0; }
+
+  button {
+    margin-top: 12px;
+    padding: 6px 16px;
+    background: #444;
+    color: #ddd;
+    border: 1px solid #555;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 14px;
+  }
+  button:hover { background: #555; }
+</style>
+</head>
+<body>
+
+<h1>推拉箱子 · 解谜示意</h1>
+<div id="hint">
+  <b>方向键 / WASD</b> 移动 &nbsp;|&nbsp;
+  <b>空格</b> 切换 推/拉 模式 &nbsp;|&nbsp;
+  <b>R</b> 重置
+</div>
+
+<div id="game"></div>
+<div id="status"></div>
+<div id="mode">模式：<b>推</b>（走向箱子会推开它）</div>
+<button onclick="resetLevel()">重置关卡</button>
+
+<script>
+// ============ 关卡数据 ============
+// 用二维数组表示每个格子的"边"：u=上, r=右, d=下, l=左
+// true 表示该方向有墙
+// 目标格和玩家、箱子单独定义
+//
+const CELL_SIZE = 100; // 改这一个数字，整张地图跟着缩放
+const TARGET_SIZE = 40;     // 目标格 ◆ 的尺寸（px）
+const ICON_SIZE = 60;       // 箱子 📦 和玩家 emoji 的尺寸（px）
+// 这样写的好处：墙是格子之间的线，不是实心方块
+const LEVEL = {
+  width: 6,
+  height: 6,
+  // 每个格子四面是否有墙：[上, 右, 下, 左]
+  edges: [
+    // y=0
+    [[1,0,0,1],[1,0,0,0],[1,0,1,0],[1,0,0,0],[1,0,0,0],[1,1,0,0]],
+    // y=1
+    [[0,0,1,1],[0,1,1,0],[0,0,0,0],[0,0,1,1],[0,0,0,0],[0,1,1,0]],
+    // y=2
+    [[1,0,0,1],[1,0,0,0],[1,1,0,0],[0,0,0,0],[0,1,0,1],[0,0,0,0]],
+    // y=3
+    [[0,0,1,1],[0,0,0,0],[0,0,1,0],[1,0,0,0],[0,0,0,0],[1,1,0,0]],
+    // y=4
+    [[0,0,0,0],[0,1,1,1],[0,0,0,0],[0,0,1,1],[0,0,0,0],[0,1,0,0]],
+    // y=5
+    [[0,0,0,0],[0,0,0,0],[0,0,0,0],[0,0,0,0],[0,0,1,1],[0,1,1,0]]
+  ],
+  // 目标格坐标
+  targets: [{x:0,y:0}, {x:0,y:1}],
+  // 箱子初始位置
+  boxes: [{x:2,y:0}, {x:3,y:0}, {x:4,y:1}, {x:1,y:3}, {x:2,y:3}, {x:4,y:3}],
+  // 玩家初始位置
+  player: {x:1,y:4},
+};
+
+// ============ 游戏状态 ============
+let map = [];        // 二维数组，每个格子存四面墙的布尔值 [上,右,下,左]
+let targets = [];    // 目标格坐标
+let boxes = [];      // 箱子坐标
+let player = {x:0,y:0};
+let mode = 'push';   // 'push' 或 'pull'
+let won = false;
+let visitedTargets = []; // 记录玩家踩过的目标格，存 "x,y" 字符串
+
+// ============ 初始化 ============
+function initLevel() {
+  // 深拷贝地图边数据
+  map = LEVEL.edges.map(row => row.map(edges => edges.slice()));
+  targets = LEVEL.targets.map(t => ({...t}));
+  boxes = LEVEL.boxes.map(b => ({...b}));
+  player = {...LEVEL.player};
+  mode = 'push';
+  won = false;
+  visitedTargets = []; // 重置
+
+  // 如果玩家初始位置就在目标格上，也算踩过
+  if (targets.some(t => t.x === player.x && t.y === player.y)) {
+    visitedTargets.push(`${player.x},${player.y}`);
+  }
+
+  render();
+  updateStatus();
+}
+
+// ============ 渲染 ============
+function render() {
+  const gameEl = document.getElementById('game');
+  gameEl.innerHTML = '';
+  gameEl.style.gridTemplateColumns = `repeat(${LEVEL.width}, ${CELL_SIZE}px)`;
+
+  for (let y = 0; y < LEVEL.height; y++) {
+    for (let x = 0; x < LEVEL.width; x++) {
+      const cell = document.createElement('div');
+      cell.className = 'cell';
+      cell.style.width = CELL_SIZE + 'px';
+      cell.style.height = CELL_SIZE + 'px';
+
+      // 四边墙
+      const [u,r,d,l] = map[y][x];
+      if (u) cell.classList.add('wall-up');
+      if (r) cell.classList.add('wall-right');
+      if (d) cell.classList.add('wall-down');
+      if (l) cell.classList.add('wall-left');
+
+      // 玩家
+      if (player.x === x && player.y === y) {
+        cell.classList.add('player');
+        cell.style.setProperty('--icon-size', ICON_SIZE + 'px');
+        if (mode === 'pull') cell.classList.add('pull-mode');
+      }
+
+      // 目标格
+      if (targets.some(t => t.x === x && t.y === y)) {
+        cell.classList.add('target');
+        cell.style.setProperty('--target-size', TARGET_SIZE + 'px');
+        // 已踩过的目标格加个标记
+        if (visitedTargets.includes(`${x},${y}`)) {
+          cell.classList.add('visited');
+        }
+      }
+
+      // 箱子
+      const isBox = boxes.some(b => b.x === x && b.y === y);
+      if (isBox) {
+        cell.classList.add('box');
+        cell.style.setProperty('--icon-size', ICON_SIZE + 'px');
+        if (targets.some(t => t.x === x && t.y === y)) cell.classList.add('on-target');
+      }
+
+      gameEl.appendChild(cell);
+    }
+  }
+
+  document.getElementById('mode').innerHTML =
+    '模式：<b>' + (mode === 'push' ? '推' : '拉') + '</b>' +
+    (mode === 'push' ? '（走向箱子会推开它）' : '（离开箱子会拉走它）');
+}
+
+// ============ 状态提示 ============
+function updateStatus() {
+  const statusEl = document.getElementById('status');
+
+  if (won) {
+    statusEl.textContent = '🎉 通关！你已踏遍所有目标格。';
+    statusEl.className = 'win';
+    return;
+  }
+
+  // 通关条件：所有目标格都被踩过
+  const allVisited = targets.every(t =>
+    visitedTargets.includes(`${t.x},${t.y}`)
+  );
+
+  if (allVisited && targets.length > 0) {
+    won = true;
+    updateStatus();
+    return;
+  }
+
+  // 显示进度
+  statusEl.textContent = `已踏足目标格：${visitedTargets.length} / ${targets.length}`;
+  statusEl.className = '';
+}
+
+// ============ 碰撞检测 ============
+// 判断从 (x1,y1) 走向 (x2,y2) 是否被墙挡住
+// dx,dy 是移动方向
+function canMove(fromX, fromY, dx, dy) {
+  const toX = fromX + dx;
+  const toY = fromY + dy;
+  if (toX < 0 || toY < 0 || toX >= LEVEL.width || toY >= LEVEL.height) return false;
+
+  // 检查当前格对应方向的边，以及目标格反向的边
+  const [u1,r1,d1,l1] = map[fromY][fromX];
+  const [u2,r2,d2,l2] = map[toY][toX];
+
+  if (dx === 1)  return !r1 && !l2; // 向右
+  if (dx === -1) return !l1 && !r2; // 向左
+  if (dy === 1)  return !d1 && !u2; // 向下
+  if (dy === -1) return !u1 && !d2; // 向上
+  return false;
+}
+
+function boxAt(x,y) {
+  return boxes.find(b => b.x === x && b.y === y);
+}
+
+// ============ 移动核心逻辑 ============
+function move(dx, dy) {
+  if (won) return;
+
+  // 玩家能否走向目标格
+  if (!canMove(player.x, player.y, dx, dy)) return;
+
+  const nx = player.x + dx;
+  const ny = player.y + dy;
+  const box = boxAt(nx, ny);
+
+  if (mode === 'push') {
+    // 推模式：目标格有箱子，尝试把箱子往同方向推一格
+    if (box) {
+      const bx = nx + dx;
+      const by = ny + dy;
+      // 箱子后面被墙挡住，或者有另一个箱子，推不动
+      if (!canMove(nx, ny, dx, dy) || boxAt(bx, by)) return;
+      box.x = bx;
+      box.y = by;
+    }
+    player.x = nx;
+    player.y = ny;
+  } else {
+    // 拉模式：如果玩家身后有箱子，离开时把箱子拉过来
+    const behindX = player.x - dx;
+    const behindY = player.y - dy;
+    const behindBox = boxAt(behindX, behindY);
+
+    // 目标格有箱子时不能走过去（会顶住它）
+    if (box) return;
+
+    player.x = nx;
+    player.y = ny;
+
+    if (behindBox) {
+      // 箱子被拉到玩家原来的格子
+      behindBox.x = player.x - dx;
+      behindBox.y = player.y - dy;
+    }
+  }
+  // 玩家移动后，检查是否踩在目标格上
+  if (targets.some(t => t.x === player.x && t.y === player.y)) {
+    const key = `${player.x},${player.y}`;
+    if (!visitedTargets.includes(key)) {
+      visitedTargets.push(key);
+    }
+  }
+  render();
+  updateStatus();
+}
+
+// ============ 模式切换 ============
+function toggleMode() {
+  if (won) return;
+  mode = mode === 'push' ? 'pull' : 'push';
+  render();
+}
+
+// ============ 重置 ============
+function resetLevel() {
+  initLevel();
+}
+
+// ============ 键盘输入 ============
+document.addEventListener('keydown', (e) => {
+  const key = e.key.toLowerCase();
+
+  if (key === 'r') { resetLevel(); return; }
+  if (key === ' ') { e.preventDefault(); toggleMode(); return; }
+
+  const moves = {
+    'arrowup': [0, -1], 'w': [0, -1],
+    'arrowdown': [0, 1], 's': [0, 1],
+    'arrowleft': [-1, 0], 'a': [-1, 0],
+    'arrowright': [1, 0], 'd': [1, 0],
+  };
+
+  if (moves[key]) {
+    e.preventDefault();
+    move(moves[key][0], moves[key][1]);
+  }
+});
+
+// ============ 启动 ============
+initLevel();
+</script>
+
+</body>
+</html>
